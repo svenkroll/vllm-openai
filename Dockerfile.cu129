@@ -1,3 +1,0 @@
-FROM vllm/vllm-openai:qwen38-cu129
-ENTRYPOINT []
-CMD ["sleep", "infinity"]

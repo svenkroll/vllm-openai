@@ -21,8 +21,8 @@ jobs:
         include:
           - dockerfile: Dockerfile.rocm
             tag_suffix: ""
-          - dockerfile: Dockerfile.cu129
-            tag_suffix: "-qwen38-cu129"
+          - dockerfile: Dockerfile.cu130
+            tag_suffix: "-qwen38-cu130"
 
     steps:
       - name: Checkout
