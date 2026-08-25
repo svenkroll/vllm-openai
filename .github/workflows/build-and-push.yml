@@ -16,6 +16,14 @@ jobs:
       contents: read
       packages: write
 
+    strategy:
+      matrix:
+        include:
+          - dockerfile: Dockerfile.rocm
+            tag_suffix: ""
+          - dockerfile: Dockerfile.cu129
+            tag_suffix: "-qwen38-cu129"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,6 +43,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=${{ matrix.tag_suffix }},onlatest=true
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short
@@ -44,6 +54,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
