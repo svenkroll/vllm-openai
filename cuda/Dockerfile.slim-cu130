@@ -26,13 +26,16 @@
 #   - modelscope, runai-model-streamer[s3,gcs,azure] (ungenutzte Hub-/Cloud-Extras)
 #   - examples/, benchmarks/ (Quellverzeichnisse des offiziellen Images)
 #
-# Multi-Stage seit 2026-08-27 (Groessen-Review): Python-Bau-Tooling
-# (PPA-Verwaltung, Compiler-Header, uv) landet nur noch im verworfenen
-# "builder"-Stage. Der Python-Interpreter selbst wird in beiden Stages
-# identisch installiert (gleiche Base, gleiches Deadsnakes-Paket), damit
-# die aus dem Builder kopierte venv im Runtime-Stage unveraendert
-# funktioniert -- ihre Shebang-/Symlink-Pfade zeigen auf denselben
-# /usr/bin/python3.${PYTHON_VERSION}.
+# Multi-Stage seit 2026-08-27 (Groessen-Review): PPA-Verwaltung und uv
+# landen nur noch im verworfenen "builder"-Stage. python3.${PYTHON_VERSION}-dev
+# (Compiler-Header) MUSS dagegen in beiden Stages installiert sein --
+# Triton kompiliert per gcc zur Laufzeit eine kleine C-Erweiterung
+# (siehe Kommentar beim Runtime-Stage weiter unten); ohne Python.h dort
+# crasht vLLM schon beim Start. Der Python-Interpreter selbst wird in
+# beiden Stages identisch installiert (gleiche Base, gleiches
+# Deadsnakes-Paket), damit die aus dem Builder kopierte venv im
+# Runtime-Stage unveraendert funktioniert -- ihre Shebang-/Symlink-Pfade
+# zeigen auf denselben /usr/bin/python3.${PYTHON_VERSION}.
 #
 # CUDA_VERSION/UBUNTU_VERSION/NCCL_VERSION sind 1:1 aus docker/versions.json
 # des vllm-project/vllm-Tags v0.27.1 uebernommen, damit sich die
@@ -136,8 +139,15 @@ ARG CUDA_VERSION
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Nur der nackte Interpreter (kein -venv/-dev) -- muss unter demselben Pfad
-# liegen wie im builder-Stage, damit die kopierte venv funktioniert.
+# python${PYTHON_VERSION}-dev bleibt hier drin (Regression aus dem
+# ersten Groessen-Review, 2026-08-27): Triton kompiliert beim ersten
+# CUDA-Zugriff (z.B. beim Import der Qwen3.5-GDN/Mamba-Kernel via
+# flash_linear_attention -> triton.runtime.driver) zur Laufzeit per gcc
+# eine kleine C-Erweiterung ("cuda_utils.c") und braucht dafuer
+# Python.h -- ohne -dev crasht vLLM schon beim Start mit
+# "fatal error: Python.h: No such file or directory", noch bevor der
+# Server ueberhaupt hochfaehrt. -dev war faelschlich als reines
+# Build-Time-Requirement (fuer's pip/uv-Installieren) eingestuft worden.
 # software-properties-common/gnupg werden nur fuer die PPA gebraucht und
 # direkt danach wieder entfernt; ca-certificates bleibt fuer HTTPS-Zugriffe
 # von vLLM/huggingface_hub zur Laufzeit (Modell-/Tokenizer-Downloads).
@@ -152,6 +162,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && for i in 1 2 3; do \
         apt-get update && apt-get install -y --no-install-recommends \
             python${PYTHON_VERSION} \
+            python${PYTHON_VERSION}-dev \
         && break || \
         { echo "Attempt $i failed, retrying in 5s..."; sleep 5; }; \
     done \
