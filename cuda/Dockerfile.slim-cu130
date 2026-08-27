@@ -17,13 +17,15 @@
 #     und der Groessengewinn das Risiko fuer die Laufzeit-Stabilitaet nicht
 #     rechtfertigt.
 #   - flashinfer-jit-cache (vorkompilierte Kernel-Shapes)
+#   - runai-model-streamer[s3] (Modell-Download von S3, README.md §9 --
+#     "vllm serve s3://... --load-format runai_streamer")
 # Gestrichen, weil fuer dieses Setup ungenutzt (README.md §2, §9 --
 # Single-Node, ein Modell, "--language-model-only"):
 #   - EP-Kernels/DeepEP/NVSHMEM (Multi-Node Expert-Parallel)
 #   - gdrcopy (Multi-Node-RDMA)
 #   - KV-Connectors (mooncake, lmcache)
 #   - ffmpeg/libsm6/libxext6/libgl1, timm (Multimodal-Vorverarbeitung)
-#   - modelscope, runai-model-streamer[s3,gcs,azure] (ungenutzte Hub-/Cloud-Extras)
+#   - modelscope, runai-model-streamer[gcs,azure] (ungenutzte Hub-/Cloud-Extras)
 #   - examples/, benchmarks/ (Quellverzeichnisse des offiziellen Images)
 #
 # Multi-Stage seit 2026-08-27 (Groessen-Review): PPA-Verwaltung und uv
@@ -116,6 +118,17 @@ RUN CUDA_TAG=$(echo ${CUDA_VERSION} | cut -d. -f1,2 | tr -d '.') \
     && uv pip install --no-cache --index-strategy unsafe-best-match \
         vllm==${VLLM_VERSION} \
         --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu${CUDA_TAG}
+
+# Run:ai Model Streamer, S3-Extra -- wird fuer
+# "vllm serve s3://... --load-format runai_streamer" gebraucht (README.md
+# §9). Bewusst nur [s3], nicht [gcs,azure] -- ungenutzt in diesem Setup.
+# Kein "--index-strategy unsafe-best-match" noetig, reines PyPI ohne
+# --extra-index-url. boto3 kommt bereits als Abhaengigkeit von
+# runai-model-streamer-s3 mit, extra Pin nicht noetig. s3fs wird bewusst
+# NICHT installiert: sowohl vllm/transformers_utils/s3_utils.py (Config-/
+# Tokenizer-Listing) als auch runai-model-streamer-s3 selbst sprechen S3
+# direkt ueber boto3 an, fsspec/s3fs kommt in keinem der beiden Pfade vor.
+RUN uv pip install --no-cache "runai-model-streamer[s3]"
 
 # FlashInfer-JIT-Cache -- vorkompilierte Kernel-Shapes, reduziert
 # Laufzeit-Nachkompilation. Version 1:1 aus versions.json des vllm-Tags.
