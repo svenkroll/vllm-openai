@@ -97,18 +97,32 @@ RUN pip install --no-cache-dir uv
 # vLLM selbst, aus dem veroeffentlichten PyPI-Wheel -- kein Source-Build.
 # Zieht seine Kernabhaengigkeiten (transformers, tokenizers, triton,
 # fastapi, uvicorn ...) automatisch mit.
+#
+# --index-strategy unsafe-best-match ist noetig: uv sucht sonst (Default
+# "first-index") jedes Paket nur auf dem Index, auf dem es zuerst einen
+# Treffer findet -- landet es dabei zuerst auf dem PyTorch-cu-Index (der nur
+# Torch & ein paar Torch-eigene Pins spiegelt), sieht uv fuer z.B.
+# "packaging" nur die dort verfuegbare alte Version und ignoriert die
+# neuere auf PyPI, die vllm/flashinfer-python tatsaechlich brauchen ->
+# "No solution found". unsafe-best-match erlaubt uv, pro Paket ueber alle
+# Indizes hinweg die beste passende Version zu waehlen (sicher hier, da nur
+# offizielles PyPI + offizieller PyTorch-Index beteiligt sind).
 ARG VLLM_VERSION=0.27.1
 ARG PYTORCH_CUDA_INDEX_BASE_URL=https://download.pytorch.org/whl
 RUN CUDA_TAG=$(echo ${CUDA_VERSION} | cut -d. -f1,2 | tr -d '.') \
-    && uv pip install --no-cache \
+    && uv pip install --no-cache --index-strategy unsafe-best-match \
         vllm==${VLLM_VERSION} \
         --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu${CUDA_TAG}
 
 # FlashInfer-JIT-Cache -- vorkompilierte Kernel-Shapes, reduziert
 # Laufzeit-Nachkompilation. Version 1:1 aus versions.json des vllm-Tags.
+# --index-strategy unsafe-best-match wie oben bei vLLM -- flashinfer.ai
+# ist ein reiner Wheel-Host ohne Dependency-Metadata; falls diese
+# Paketversion transitive Abhaengigkeiten mitbringt, die nicht schon durch
+# den vLLM-Schritt erfuellt sind, muessen die von PyPI kommen koennen.
 ARG FLASHINFER_VERSION=0.6.16.post3
 RUN CUDA_TAG=$(echo ${CUDA_VERSION} | cut -d. -f1,2 | tr -d '.') \
-    && uv pip install --no-cache \
+    && uv pip install --no-cache --index-strategy unsafe-best-match \
         flashinfer-jit-cache==${FLASHINFER_VERSION} \
         --index-url https://flashinfer.ai/whl/cu${CUDA_TAG}
 
