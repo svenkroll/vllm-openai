@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1
+#
+# vLLM-OpenAI-Serving auf Basis des von Vast.ai gepflegten vLLM-Images.
+#
+
+FROM vastai/vllm:v0.27.1-cuda-13.0
+
+ENV PATH="/venv/main/bin:${PATH}"
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib64:${LD_LIBRARY_PATH}
+
+ENV VLLM_USAGE_SOURCE=production-docker-image
+
+ENTRYPOINT ["/venv/main/bin/vllm", "serve"]

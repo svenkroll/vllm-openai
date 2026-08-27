@@ -21,17 +21,15 @@ jobs:
         include:
           - dockerfile: rocm/Dockerfile
             tag_suffix: ""
-          - dockerfile: cuda/Dockerfile.cu130
-            tag_suffix: "-qwen38-cu130"
-          - dockerfile: cuda/Dockerfile.slim-cu130
-            tag_suffix: "-qwen38-slim-cu130"
+          - dockerfile: cuda/Dockerfile.vast-ai-vllm-v027.cu130
+            tag_suffix: "-vast-vllm-v027-cu130"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Free disk space
-        if: matrix.dockerfile == 'cuda/Dockerfile.slim-cu130'
+        if: matrix.dockerfile == 'cuda/Dockerfile.vast-ai-vllm-v027.cu130'
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
