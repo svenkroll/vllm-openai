@@ -184,6 +184,32 @@ RUN CUDA_DASH=$(echo ${CUDA_VERSION} | cut -d. -f1,2 | tr '.' '-') \
         libcublas-dev-${CUDA_DASH} \
     && rm -rf /var/lib/apt/lists/*
 
+# libnuma1 (nur die Laufzeitbibliothek, keine -dev-Header): fastsafetensors
+# ist eine harte, nicht-optionale Abhaengigkeit von vllm (kein Extra) und
+# linkt als natives Paket gegen libnuma fuer NUMA-bewusstes Pinned-Memory.
+# Ohne libnuma1 im Image kann der Import scheitern, sobald vLLM
+# load_format=auto tatsaechlich fastsafetensors zieht. Das offizielle Image
+# installiert zusaetzlich libnuma-dev (Header, fuer den Fall dass etwas
+# gegen libnuma kompiliert werden muss) und numactl (CLI fuer manuelles
+# NUMA-Binding durch Operator) -- beides fuer den reinen Laufzeitbetrieb
+# hier nicht noetig.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libnuma1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Treiber-Bibliotheken (libcuda.so.1 & Co.) werden vom Host in den Container
+# gemountet, klassischerweise nach /usr/local/nvidia/lib64 -- das steht aber
+# nicht automatisch im Dynamic-Linker-Suchpfad des Base-Images. nvidia-smi
+# findet die Treiber-Libs unabhaengig davon (ueber libnvidia-ml), Torchs
+# cudaInit() aber nicht: ohne diesen Pfad laedt es im Zweifel keine oder die
+# falsche libcuda.so und scheitert mit einem generischen "CUDA unknown
+# error", obwohl nvidia-smi im selben Container einwandfrei laeuft. 1:1 aus
+# dem offiziellen vllm-project/vllm docker/Dockerfile uebernommen (dort seit
+# dem CUDA-12.8/13.0-Wechsel von /usr/local/cuda zurueck zu
+# /usr/local/nvidia als Treiber-Mountpoint explizit ergaenzt).
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib64:${LD_LIBRARY_PATH}
+
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 ENV VLLM_USAGE_SOURCE=production-docker-image
