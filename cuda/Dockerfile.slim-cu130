@@ -1,0 +1,166 @@
+# syntax=docker/dockerfile:1
+#
+# Schlankes vLLM-OpenAI-Serving-Image fuer Qwen3.8-27B-NVFP4 auf 2x RTX 5090
+# (sonofail/orchestrator, gpu_type "5090x2").
+#
+# Vorbild ist das offizielle docker/Dockerfile aus vllm-project/vllm. Anders
+# als dort wird hier nicht aus dem Quellcode gebaut, sondern das
+# veroeffentlichte PyPI-Wheel installiert -- die Build-Stages (Rust-Frontend,
+# csrc, EP-Kernels) bestimmen die Groesse des fertigen Images ohnehin nicht,
+# sie werden beim offiziellen Multi-Stage-Build verworfen.
+#
+# Beibehalten gegenueber dem offiziellen Image:
+#   - CUDA-Devel-Subset (nvcc, cudart, nvrtc, cuobjdump, curand-dev,
+#     cublas-dev) fuer Laufzeit-JIT von FlashInfer/DeepGEMM/Triton.
+#     cuobjdump ist ein winziges Utility (~1-2 MB) -- nicht entfernt, da
+#     DeepGEMM/Triton es fuer JIT-Debugging/-Introspektion nutzen koennen
+#     und der Groessengewinn das Risiko fuer die Laufzeit-Stabilitaet nicht
+#     rechtfertigt.
+#   - flashinfer-jit-cache (vorkompilierte Kernel-Shapes)
+# Gestrichen, weil fuer dieses Setup ungenutzt (README.md §2, §9 --
+# Single-Node, ein Modell, "--language-model-only"):
+#   - EP-Kernels/DeepEP/NVSHMEM (Multi-Node Expert-Parallel)
+#   - gdrcopy (Multi-Node-RDMA)
+#   - KV-Connectors (mooncake, lmcache)
+#   - ffmpeg/libsm6/libxext6/libgl1, timm (Multimodal-Vorverarbeitung)
+#   - modelscope, runai-model-streamer[s3,gcs,azure] (ungenutzte Hub-/Cloud-Extras)
+#   - examples/, benchmarks/ (Quellverzeichnisse des offiziellen Images)
+#
+# Multi-Stage seit 2026-08-27 (Groessen-Review): Python-Bau-Tooling
+# (PPA-Verwaltung, Compiler-Header, uv) landet nur noch im verworfenen
+# "builder"-Stage. Der Python-Interpreter selbst wird in beiden Stages
+# identisch installiert (gleiche Base, gleiches Deadsnakes-Paket), damit
+# die aus dem Builder kopierte venv im Runtime-Stage unveraendert
+# funktioniert -- ihre Shebang-/Symlink-Pfade zeigen auf denselben
+# /usr/bin/python3.${PYTHON_VERSION}.
+#
+# CUDA_VERSION/UBUNTU_VERSION/NCCL_VERSION sind 1:1 aus docker/versions.json
+# des vllm-project/vllm-Tags v0.27.1 uebernommen, damit sich die
+# Treiber-Anforderung an die RunPod-Hosts gegenueber dem bisher laufenden
+# offiziellen Image nicht aendert -- siehe Gespraech vom 2026-08-27.
+# Hinweis: cuda-nvcc/-cudart/... werden nur auf Major.Minor gepinnt
+# (${CUDA_DASH}, z.B. "13-0"), nicht auf den exakten Patch-Stand 13.0.3 des
+# Base-Images -- ein Rebuild kann also eine andere 13.0.x-Patch-Version
+# ziehen als beim letzten getesteten Build.
+
+ARG CUDA_VERSION=13.0.3
+ARG PYTHON_VERSION=3.12
+ARG UBUNTU_VERSION=22.04
+
+########################################################################
+# Stage 1/2: builder -- Python-Bau-Tooling + venv mit vLLM/FlashInfer.
+# Wird komplett verworfen; nichts aus diesem Stage landet 1:1 im
+# Runtime-Image ausser dem Inhalt von /opt/venv.
+########################################################################
+FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu${UBUNTU_VERSION} AS builder
+
+ARG PYTHON_VERSION
+ARG CUDA_VERSION
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Python-Interpreter ueber Deadsnakes (22.04 bringt nur 3.10 mit).
+# python${PYTHON_VERSION}-dev bleibt hier drin fuer den Fall, dass ein
+# Transitiv-Dependency doch kein manylinux-Wheel hat und lokal bauen muss --
+# kostet im finalen Image nichts, da dieser Stage verworfen wird.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+        curl \
+        ca-certificates \
+        gnupg \
+    && for i in 1 2 3; do \
+        add-apt-repository -y ppa:deadsnakes/ppa && break || \
+        { echo "Attempt $i failed, retrying in 5s..."; sleep 5; }; \
+    done \
+    && for i in 1 2 3; do \
+        apt-get update && apt-get install -y --no-install-recommends \
+            python${PYTHON_VERSION} \
+            python${PYTHON_VERSION}-venv \
+            python${PYTHON_VERSION}-dev \
+        && break || \
+        { echo "Attempt $i failed, retrying in 5s..."; sleep 5; }; \
+    done \
+    && rm -rf /var/lib/apt/lists/*
+
+# Deadsnakes-venv-Pakete bringen kein gebundeltes pip mit (ensurepip ist wie
+# beim System-Python gestrippt) -- deshalb wie im Original ueber
+# get-pip.py bootstrappen, nur diesmal in die venv statt system-weit.
+RUN python${PYTHON_VERSION} -m venv /opt/venv --without-pip \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | /opt/venv/bin/python
+# VIRTUAL_ENV muss gesetzt sein, sonst findet `uv pip install` unten die
+# venv nicht (uv schaut auf VIRTUAL_ENV, nicht nur auf PATH).
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+
+RUN pip install --no-cache-dir uv
+
+# vLLM selbst, aus dem veroeffentlichten PyPI-Wheel -- kein Source-Build.
+# Zieht seine Kernabhaengigkeiten (transformers, tokenizers, triton,
+# fastapi, uvicorn ...) automatisch mit.
+ARG VLLM_VERSION=0.27.1
+ARG PYTORCH_CUDA_INDEX_BASE_URL=https://download.pytorch.org/whl
+RUN CUDA_TAG=$(echo ${CUDA_VERSION} | cut -d. -f1,2 | tr -d '.') \
+    && uv pip install --no-cache \
+        vllm==${VLLM_VERSION} \
+        --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu${CUDA_TAG}
+
+# FlashInfer-JIT-Cache -- vorkompilierte Kernel-Shapes, reduziert
+# Laufzeit-Nachkompilation. Version 1:1 aus versions.json des vllm-Tags.
+ARG FLASHINFER_VERSION=0.6.16.post3
+RUN CUDA_TAG=$(echo ${CUDA_VERSION} | cut -d. -f1,2 | tr -d '.') \
+    && uv pip install --no-cache \
+        flashinfer-jit-cache==${FLASHINFER_VERSION} \
+        --index-url https://flashinfer.ai/whl/cu${CUDA_TAG}
+
+########################################################################
+# Stage 2/2: runtime -- schlankes Image, das tatsaechlich ausgeliefert wird.
+########################################################################
+FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu${UBUNTU_VERSION} AS runtime
+
+ARG PYTHON_VERSION
+ARG CUDA_VERSION
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Nur der nackte Interpreter (kein -venv/-dev) -- muss unter demselben Pfad
+# liegen wie im builder-Stage, damit die kopierte venv funktioniert.
+# software-properties-common/gnupg werden nur fuer die PPA gebraucht und
+# direkt danach wieder entfernt; ca-certificates bleibt fuer HTTPS-Zugriffe
+# von vLLM/huggingface_hub zur Laufzeit (Modell-/Tokenizer-Downloads).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+        ca-certificates \
+        gnupg \
+    && for i in 1 2 3; do \
+        add-apt-repository -y ppa:deadsnakes/ppa && break || \
+        { echo "Attempt $i failed, retrying in 5s..."; sleep 5; }; \
+    done \
+    && for i in 1 2 3; do \
+        apt-get update && apt-get install -y --no-install-recommends \
+            python${PYTHON_VERSION} \
+        && break || \
+        { echo "Attempt $i failed, retrying in 5s..."; sleep 5; }; \
+    done \
+    && apt-get purge -y --auto-remove software-properties-common gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# CUDA-Devel-Subset fuer Laufzeit-JIT (FlashInfer/DeepGEMM/Triton) -- exakt
+# die Paketliste des offiziellen vllm-openai-Images, nicht der volle
+# "-devel"-Unterbau (der brächte zusätzlich cuDNN, NPP, nvJPEG etc. mit,
+# die vLLM zur Laufzeit nicht braucht).
+RUN CUDA_DASH=$(echo ${CUDA_VERSION} | cut -d. -f1,2 | tr '.' '-') \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends --allow-change-held-packages \
+        cuda-nvcc-${CUDA_DASH} \
+        cuda-cudart-${CUDA_DASH} \
+        cuda-nvrtc-${CUDA_DASH} \
+        cuda-cuobjdump-${CUDA_DASH} \
+        libcurand-dev-${CUDA_DASH} \
+        libcublas-dev-${CUDA_DASH} \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+ENV VLLM_USAGE_SOURCE=production-docker-image
+
+ENTRYPOINT ["vllm", "serve"]

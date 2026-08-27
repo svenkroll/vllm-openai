@@ -19,14 +19,23 @@ jobs:
     strategy:
       matrix:
         include:
-          - dockerfile: Dockerfile.rocm
+          - dockerfile: rocm/Dockerfile
             tag_suffix: ""
-          - dockerfile: Dockerfile.cu130
+          - dockerfile: cuda/Dockerfile.cu130
             tag_suffix: "-qwen38-cu130"
+          - dockerfile: cuda/Dockerfile.slim-cu130
+            tag_suffix: "-qwen38-slim-cu130"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Free disk space
+        if: matrix.dockerfile == 'cuda/Dockerfile.slim-cu130'
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          docker-images: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
