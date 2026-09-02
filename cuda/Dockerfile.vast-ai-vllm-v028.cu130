@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+#
+# vLLM-OpenAI-Serving auf Basis des von Vast.ai gepflegten vLLM-Images.
+#
+
+FROM vastai/vllm:v0.28.0-cuda-13.0
+
+# Kein /venv/main: vastai/vllm baut nicht auf vastai/base-image, sondern auf
+# vllm/vllm-openai:v0.28.1 (System-Python 3.12, PIP_BREAK_SYSTEM_PACKAGES=1),
+# nachtraeglich per convert-non-vast-image.sh vast-tauglich gemacht. vllm liegt
+# auf dem PATH, nicht in einem Conda-Env.
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib64:${LD_LIBRARY_PATH}
+
+ENV VLLM_USAGE_SOURCE=production-docker-image
+
+# stellt das ENTRYPOINT von vllm/vllm-openai wieder her, das vastai zuletzt
+# durch /opt/instance-tools/bin/entrypoint.sh ersetzt. Exec-Form loest ueber
+# den PATH des Images auf, ohne Shell -- so macht es das Upstream-Image selbst.
+ENTRYPOINT ["vllm", "serve"]
